@@ -1,0 +1,27 @@
+# Ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Variáveis locais e credenciais sensíveis
+.env
+*.json
+!requirements.txt
+
+# Banco de dados local efêmero
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# IDEs e editores
+.vscode/
+.idea/
+.DS_Store
