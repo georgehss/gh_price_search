@@ -12,8 +12,8 @@ try:
     from apscheduler.schedulers.background import BackgroundScheduler
     HAS_APSCHEDULER = True
 except ImportError:
+    BackgroundScheduler = None
     HAS_APSCHEDULER = False
-    BackgroundScheduler = Any  # type: ignore
 
 class ThreadedFallbackScheduler:
     """Agendador nativo baseado em threads padrão do Python caso APScheduler falhe."""
@@ -169,7 +169,7 @@ def init_scheduler(interval_minutes: Optional[int] = None) -> Any:
 
     minutes = interval_minutes or Config.CHECK_INTERVAL_MINUTES or 60
 
-    if HAS_APSCHEDULER:
+    if HAS_APSCHEDULER and BackgroundScheduler is not None:
         try:
             sched = BackgroundScheduler(daemon=True)
             sched.add_job(
