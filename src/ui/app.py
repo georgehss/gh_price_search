@@ -105,7 +105,7 @@ tab_search, tab_monitored, tab_history, tab_settings = st.tabs([
 # ==========================================
 with tab_search:
     st.header("🔎 Pesquisa Detalhada em Toda a Internet")
-    st.write("Varre simultaneamente KaBuM!, Buscapé, Zoom, Amazon, Americanas, Mercado Livre e Cuponomia.")
+    st.write("Varre simultaneamente KaBuM!, Carrefour, Buscapé, Zoom, Bondfaro, Mercado Livre, Google Shopping e Cuponomia.")
 
     # Termos de busca rápidos / recentes para facilitar edição e reexecução
     recent_kw = DatabaseManager.get_recent_search_keywords(limit=6)
@@ -201,17 +201,23 @@ with tab_search:
 
         st.markdown("---")
         # Painel Superior de Auditoria e Detalhes da Varredura Web
+        source_status = results.get("source_status", {})
         with st.container(border=True):
             st.markdown(f"### 📋 Detalhes da Varredura Web: **{query_saved}**")
             d1, d2, d3, d4 = st.columns(4)
             with d1:
                 st.markdown(f"**🔍 Termo Pesquisado:**\n`{query_saved}`")
             with d2:
-                st.markdown(f"**🏬 Lojas Consultadas:**\nKaBuM!, Buscapé, Zoom, ML, Google")
+                consulted_str = ", ".join(source_status.keys()) if source_status else "KaBuM!, Carrefour, Buscapé, Zoom, Bondfaro, ML, Google"
+                st.markdown(f"**🏬 Lojas Consultadas:**\n{consulted_str}")
             with d3:
                 st.metric("Ofertas Validadas", len(top_offers))
             with d4:
                 st.metric("Itens Descartados (Filtro)", rejected_count)
+
+            if source_status:
+                status_badges = " | ".join([f"**{k}:** `{v}`" for k, v in source_status.items()])
+                st.caption(f"📡 **Status por fonte:** {status_badges}")
 
             # Expander de auditoria detalhada dos itens descartados
             if rejections:
@@ -224,9 +230,24 @@ with tab_search:
                         st.dataframe(df_rej_show, use_container_width=True, hide_index=True)
 
         if not top_offers:
-            st.warning(f"⚠️ **Nenhuma oferta em estoque encontrada para '{query_saved}'.**")
+            st.warning(f"⚠️ **Nenhuma oferta exata em estoque encontrada para '{query_saved}'.**")
             if rejected_count > 0:
-                st.info(f"🛡️ **Filtro Anti-Divergência Ativo:** {rejected_count} resultados irrelevantes retornados pelos buscadores (como mouse pads, peças ou acessórios) foram descartados automaticamente para garantir que você não compre o produto errado.")
+                st.info(f"🛡️ **Filtro Anti-Divergência Ativo:** {rejected_count} resultados de modelos diferentes ou acessórios retornados pelos buscadores foram descartados automaticamente para garantir que você não compre o produto errado.")
+
+            # Links diretos para busca manual em fontes protegidas por login/JS
+            import urllib.parse
+            q_enc = urllib.parse.quote_plus(query_saved)
+            q_slug = "-".join(query_saved.lower().split())
+            st.markdown("**🔗 Buscar diretamente nos marketplaces:**")
+            l1, l2, l3, l4 = st.columns(4)
+            with l1:
+                st.link_button("🛒 Google Shopping", f"https://www.google.com/search?tbm=shop&q={q_enc}", use_container_width=True)
+            with l2:
+                st.link_button("🤝 Mercado Livre", f"https://lista.mercadolivre.com.br/{urllib.parse.quote(q_slug)}", use_container_width=True)
+            with l3:
+                st.link_button("📦 Amazon", f"https://www.amazon.com.br/s?k={q_enc}", use_container_width=True)
+            with l4:
+                st.link_button("🧡 Shopee", f"https://shopee.com.br/search?keyword={q_enc}", use_container_width=True)
 
             if verdict:
                 st.subheader("🧠 Análise do Assistente IA")
@@ -644,6 +665,8 @@ with tab_settings:
 
         st.markdown(f"""
         - **Google Gemini AI:** `{'Configurada ✅' if Config.GEMINI_API_KEY else 'Ausente ❌'}`
+        - **Serper.dev (Google Shopping):** `{'Configurada ✅' if Config.SERPER_API_KEY else 'Opcional (Não configurada) ⚪'}`
+        - **Mercado Livre Token:** `{'Configurada ✅' if Config.MELI_ACCESS_TOKEN else 'Opcional (Não configurada) ⚪'}`
         - **CallMeBot API:** `{'Configurada ✅' if Config.CALLMEBOT_API_KEY else 'Ausente ❌'}`
         - **Banco Google Sheets (Drive):** `{'Conectado ✅' if Config.get_gsheets_credentials() else 'Não configurado (Usando SQLite Local) 💾'}`
         - **Frequência de Checagem Atual:** `{Config.CHECK_INTERVAL_MINUTES} minutos`
@@ -672,10 +695,16 @@ with tab_settings:
 
         with st.expander("🔑 Atualizar Chaves de API no .env"):
             gemini_in = st.text_input("Nova Chave Gemini API:", type="password")
+            serper_in = st.text_input("Nova Chave Serper.dev (Google Shopping):", type="password")
+            meli_in = st.text_input("Novo Token Mercado Livre (MELI_ACCESS_TOKEN):", type="password")
             callmebot_in = st.text_input("Nova Chave CallMeBot API:", type="password")
             if st.button("Salvar Chaves"):
                 if gemini_in:
                     Config.save_env_var("GEMINI_API_KEY", gemini_in)
+                if serper_in:
+                    Config.save_env_var("SERPER_API_KEY", serper_in)
+                if meli_in:
+                    Config.save_env_var("MELI_ACCESS_TOKEN", meli_in)
                 if callmebot_in:
                     Config.save_env_var("CALLMEBOT_API_KEY", callmebot_in)
                 st.success("Chaves atualizadas no arquivo .env!")

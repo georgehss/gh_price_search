@@ -9,6 +9,14 @@ STOPWORDS = {
     "pra", "pro", "sem"
 }
 
+GENERIC_CATEGORY_WORDS = {
+    "caixa", "som", "bluetooth", "speaker", "fone", "ouvido", "headset", "headphone",
+    "smartphone", "celular", "notebook", "laptop", "monitor", "tv", "smart",
+    "placa", "video", "ssd", "hd", "memoria", "cadeira", "gamer", "controle",
+    "console", "tablet", "relogio", "smartwatch", "impressora", "teclado", "mouse",
+    "microfone", "camera", "carregador", "portatil", "mini", "pro", "max", "ultra"
+}
+
 # Substantivos e termos que caracterizam acessórios/peças quando o usuário NÃO os pesquisou
 ACCESSORY_TERMS = [
     # Periféricos, refrigeração e apoios
@@ -48,6 +56,36 @@ class ProductRelevanceFilter:
         normalized = cls.normalize_text(text)
         tokens = [t for t in normalized.split() if t not in STOPWORDS and len(t) > 1]
         return tokens
+
+    @classmethod
+    def extract_model_codes(cls, text_norm: str) -> List[str]:
+        """
+        Extrai códigos de modelo numéricos ou alfanuméricos (ex: 's314', 'eps314', '2365', '4060').
+        Ignora unidades comuns como 'w', 'gb', 'tb', 'hz', 'v', 'mm', 'cm', 'kg', 'ml', 'l', 'mah' quando isoladas.
+        """
+        tokens = text_norm.split()
+        unit_suffixes = ("gb", "tb", "mb", "hz", "khz", "mhz", "ghz", "mah", "mm", "cm", "kg", "ml", "rms", "pmpo")
+        codes: List[str] = []
+        for i, tok in enumerate(tokens):
+            if not any(c.isdigit() for c in tok) or len(tok) < 2:
+                continue
+            if any(tok.endswith(u) and tok[:-len(u)].isdigit() for u in unit_suffixes):
+                continue
+            # Ignora potências/voltagens curtas comuns como "20w", "110v", "220v", "500w"
+            if (tok.endswith("w") or tok.endswith("v")) and tok[:-1].isdigit():
+                continue
+            codes.append(tok)
+            if i > 0 and tokens[i - 1].isalpha() and 1 <= len(tokens[i - 1]) <= 3 and tokens[i - 1] not in STOPWORDS:
+                codes.append(f"{tokens[i - 1]}{tok}")
+        return list(dict.fromkeys(codes))
+
+    @classmethod
+    def infer_brand_token(cls, q_tokens: List[str]) -> str:
+        """Infere o token de marca provável ignorando palavras genéricas de categoria."""
+        for tok in q_tokens:
+            if len(tok) >= 4 and tok not in GENERIC_CATEGORY_WORDS and not any(c.isdigit() for c in tok):
+                return tok
+        return q_tokens[0] if q_tokens else ""
 
     @classmethod
     def check_accessory_mismatch(cls, query_norm: str, title_norm: str) -> Tuple[bool, str]:
@@ -157,8 +195,8 @@ class ProductRelevanceFilter:
             return False, 0.0, "Conflito de versão ou geração incompatível"
 
         # 3. Verificação de Marca / Termo Principal Obrigatório
-        # O primeiro token ou marca (ex: Sabala, Kindle, Sony, Apple, Playstation)
-        primary_brand = q_tokens[0]
+        # Infere a marca ignorando palavras genéricas de categoria (ex: 'caixa', 'som', 'bluetooth')
+        primary_brand = cls.infer_brand_token(q_tokens)
         if len(primary_brand) >= 4 and primary_brand not in title_norm:
             # Caso especial de abreviações: ps5 -> playstation 5
             if not (primary_brand == "ps5" and "playstation" in title_norm):
@@ -168,7 +206,6 @@ class ProductRelevanceFilter:
         matched_tokens = 0
         title_words = set(title_norm.split())
 
-        query_compact = query_norm.replace(" ", "")
         title_compact = title_norm.replace(" ", "")
 
         for token in q_tokens:
@@ -195,13 +232,22 @@ class ProductRelevanceFilter:
         else:
             is_valid = coverage >= 0.50
 
-        # Verificação adicional para números/modelos na query
-        query_numbers = [t for t in q_tokens if t.isdigit()]
-        for num in query_numbers:
-            if num not in title_norm and num not in title_compact:
-                is_valid = False
-                score *= 0.5
-                return False, score, f"Número de modelo '{num}' ausente no produto"
+        # 5. Verificação estrita para códigos de modelo (numéricos e alfanuméricos, ex: 's314', 'eps314', '4060')
+        query_codes = cls.extract_model_codes(query_norm)
+        if query_codes:
+            base_codes = [c for c in query_codes if any(tok == c for tok in query_norm.split())]
+            for code in (base_codes or query_codes):
+                # Aceita o código isolado ou sua forma concatenada (ex: 's314' ou 'eps314')
+                code_present = (
+                    code in title_words
+                    or code in title_norm
+                    or code in title_compact
+                )
+                if not code_present:
+                    title_codes = cls.extract_model_codes(title_norm)
+                    if title_codes:
+                        return False, round(score * 0.4, 2), f"Modelo divergente: esperado '{code}', encontrado '{title_codes[0]}'"
+                    return False, round(score * 0.5, 2), f"Código de modelo '{code}' ausente no produto"
 
         reason = "Aprovado pelo filtro de relevância" if is_valid else f"Baixa correspondência ({score:.0%})"
         return is_valid, score, reason
@@ -221,7 +267,7 @@ class ProductRelevanceFilter:
         brand_alternatives: List[ProductOffer] = []
 
         q_tokens = cls.extract_tokens(query)
-        primary_brand = q_tokens[0] if q_tokens else ""
+        primary_brand = cls.infer_brand_token(q_tokens)
         query_norm = cls.normalize_text(query)
 
         for offer in offers:

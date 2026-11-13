@@ -30,6 +30,8 @@ class Config:
     CALLMEBOT_API_KEY = _get_setting("CALLMEBOT_API_KEY", "")
     DEFAULT_PHONE = _get_setting("DEFAULT_PHONE", "")
     CHECK_INTERVAL_MINUTES = int(_get_setting("CHECK_INTERVAL_MINUTES", "60") or "60")
+    SERPER_API_KEY = _get_setting("SERPER_API_KEY", "")
+    MELI_ACCESS_TOKEN = _get_setting("MELI_ACCESS_TOKEN", "")
     
     # Configurações do Google Sheets (Google Drive)
     GSHEETS_URL = _get_setting("GSHEETS_URL", "")
@@ -85,6 +87,8 @@ class Config:
         cls.CALLMEBOT_API_KEY = _get_setting("CALLMEBOT_API_KEY", "")
         cls.DEFAULT_PHONE = _get_setting("DEFAULT_PHONE", "")
         cls.CHECK_INTERVAL_MINUTES = int(_get_setting("CHECK_INTERVAL_MINUTES", "60") or "60")
+        cls.SERPER_API_KEY = _get_setting("SERPER_API_KEY", "")
+        cls.MELI_ACCESS_TOKEN = _get_setting("MELI_ACCESS_TOKEN", "")
         cls.GSHEETS_URL = _get_setting("GSHEETS_URL", "")
         cls.GSHEETS_NAME = _get_setting("GSHEETS_NAME", "GH Price Search Data")
 
