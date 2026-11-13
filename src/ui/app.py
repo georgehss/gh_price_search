@@ -1,6 +1,13 @@
+import sys
+from pathlib import Path
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+
+# Garante que a raiz do projeto esteja no sys.path (necessário no Streamlit Cloud)
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 try:
     import plotly.express as px
