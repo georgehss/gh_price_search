@@ -49,10 +49,52 @@ class ThreadedFallbackScheduler:
 
 scheduler: Any = None
 
-def check_single_product(product: dict, force_notify: bool = False) -> dict:
+def _build_scan_snapshot(
+    search_res: dict,
+    ai_verdict: str = "",
+    status: str = "ok",
+) -> dict:
+    """Monta um resumo compacto da varredura para exibição detalhada no painel web."""
+    best_deal = search_res.get("best_deal") or {}
+    top_offers = [
+        {
+            "title": o.get("title", ""),
+            "price": o.get("price", 0.0),
+            "store": o.get("store", ""),
+            "source": o.get("source", ""),
+            "link": o.get("link", ""),
+        }
+        for o in (search_res.get("top_offers") or [])[:5]
+    ]
+    coupons = [
+        {
+            "code": c.get("code", ""),
+            "store": c.get("store", ""),
+            "description": c.get("description", ""),
+            "link": c.get("link", ""),
+        }
+        for c in (search_res.get("coupons") or [])[:3]
+    ]
+    return {
+        "status": status,
+        "image_url": best_deal.get("image_url"),
+        "source_status": search_res.get("source_status", {}),
+        "total_found": search_res.get("total_found", 0),
+        "rejected_count": search_res.get("rejected_count", 0),
+        "top_offers": top_offers,
+        "coupons": coupons,
+        "ai_verdict": ai_verdict,
+    }
+
+
+def check_single_product(
+    product: dict,
+    force_notify: bool = False,
+    notify_whatsapp: bool = True,
+) -> dict:
     """
-    Executa a verificação de preço de um produto e envia notificação caso atinja o critério de alerta.
-    Retorna resumo do resultado da checagem.
+    Executa a verificação de preço de um produto, salva o snapshot detalhado da varredura
+    e envia notificação caso atinja o critério de alerta.
     """
     keyword = product["keyword"]
     target_price = float(product.get("target_price", 0.0) or 0.0)
@@ -65,14 +107,29 @@ def check_single_product(product: dict, force_notify: bool = False) -> dict:
     best_deal = search_res.get("best_deal")
     top_offers = search_res.get("top_offers", [])
     coupons = search_res.get("coupons", [])
+    brand_alternatives = search_res.get("brand_alternatives", [])
 
     if not best_deal or best_deal.get("price", 0) <= 0:
+        snapshot = _build_scan_snapshot(search_res, status="no_results")
+        DatabaseManager.update_product_scan_status(product_id, snapshot)
         return {"status": "no_results", "product": keyword}
 
     current_price = float(best_deal["price"])
     store = best_deal.get("store", "Loja Online")
     title = best_deal.get("title", keyword)
     link = best_deal.get("link", "")
+
+    # Gerar análise da IA para persistir no snapshot e usar no eventual alerta
+    ai_res = DealAIAnalyzer.analyze_deals(
+        query=keyword,
+        best_deal=best_deal,
+        top_offers=top_offers,
+        coupons=coupons,
+        historical_min=historical_min,
+        brand_alternatives=brand_alternatives,
+    )
+    verdict = ai_res.get("verdict", "")
+    snapshot = _build_scan_snapshot(search_res, ai_verdict=verdict, status="ok")
 
     # Gravar no histórico
     DatabaseManager.record_price(
@@ -84,25 +141,25 @@ def check_single_product(product: dict, force_notify: bool = False) -> dict:
         link=link
     )
 
-    # Atualizar estado do produto
-    DatabaseManager.update_product_lowest(product_id, current_price, store, link, title=title)
+    # Atualizar estado e snapshot completo do produto
+    DatabaseManager.update_product_lowest(
+        product_id, current_price, store, link, title=title, scan_snapshot=snapshot
+    )
 
     # Critérios de disparo de alerta inteligente:
     # 1. Se atingiu o preço-alvo definido pelo usuário
     # 2. Se bateu o menor preço histórico registrado (com pelo menos 1% de queda)
-    # 3. Se for forçado (ex: clique no botão 'Checar' na interface)
+    # 3. Se for forçado (ex: clique no botão 'Checar' com WhatsApp habilitado)
     should_alert = False
-    alert_reason = ""
 
-    if force_notify:
+    if not notify_whatsapp:
+        should_alert = False
+    elif force_notify:
         should_alert = True
-        alert_reason = "manual_trigger"
     elif target_price > 0 and current_price <= target_price:
         should_alert = True
-        alert_reason = "target_reached"
     elif historical_min and historical_min > 0 and current_price < (historical_min * 0.99):
         should_alert = True
-        alert_reason = "historical_low"
 
     # Anti-spam: se não for manual, verificar se já alertamos sobre este mesmo patamar de preço recentemente (últimas 6h)
     if should_alert and not force_notify:
@@ -119,24 +176,14 @@ def check_single_product(product: dict, force_notify: bool = False) -> dict:
 
     notify_res = None
     if should_alert:
-        # Gerar análise da IA
-        ai_res = DealAIAnalyzer.analyze_deals(
-            query=keyword,
-            best_deal=best_deal,
-            top_offers=top_offers,
-            coupons=coupons,
-            historical_min=historical_min
-        )
-        verdict = ai_res.get("verdict", "")
-
-        # Enviar WhatsApp
         notify_res = CallMeBotNotifier.send_deal_report(
             keyword=keyword,
             best_deal=best_deal,
             top_offers=top_offers,
             coupons=coupons,
             gemini_verdict=verdict,
-            product_id=product_id
+            product_id=product_id,
+            brand_alternatives=brand_alternatives,
         )
 
     return {

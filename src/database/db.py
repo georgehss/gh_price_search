@@ -86,10 +86,14 @@ def init_db():
         """)
 
         # Migrações seguras de colunas complementares
-        try:
-            cursor.execute("ALTER TABLE monitored_products ADD COLUMN last_title TEXT DEFAULT '';")
-        except sqlite3.OperationalError:
-            pass
+        for alter_sql in (
+            "ALTER TABLE monitored_products ADD COLUMN last_title TEXT DEFAULT '';",
+            "ALTER TABLE monitored_products ADD COLUMN last_scan_json TEXT DEFAULT '';",
+        ):
+            try:
+                cursor.execute(alter_sql)
+            except sqlite3.OperationalError:
+                pass
 
     # Sincronização inicial com Google Sheets (caso configurado)
     try:

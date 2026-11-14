@@ -1,5 +1,7 @@
+import json
 import sys
 from pathlib import Path
+from typing import Any
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -385,9 +387,153 @@ with tab_search:
 # ==========================================
 # ABA 2: PRODUTOS MONITORADOS
 # ==========================================
+def _format_brl(value: float) -> str:
+    """Formata um valor numérico como moeda brasileira (R$ 1.234,56)."""
+    return f"R$ {float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _parse_scan_snapshot(raw_json: Any) -> dict:
+    """Deserializa com segurança o snapshot JSON da última varredura."""
+    if not raw_json or not isinstance(raw_json, str):
+        return {}
+    try:
+        data = json.loads(raw_json)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _render_monitored_product_details(p: dict, curr_p: Any, target_p: Any):
+    """Renderiza o painel expandido com detalhes completos da última varredura e histórico."""
+    scan = _parse_scan_snapshot(p.get("last_scan_json"))
+    img_url = scan.get("image_url")
+
+    # Bloco 1: Oferta Campeã, Thumbnail e Meta
+    if img_url:
+        col_img, col_info, col_meta = st.columns([1, 2.5, 2])
+        with col_img:
+            st.image(img_url, use_container_width=True)
+    else:
+        col_info, col_meta = st.columns([3, 2])
+
+    with col_info:
+        last_title = p.get("last_title") or (p.get("lowest_store") and f"Oferta em {p.get('lowest_store')}") or "Nenhum título registrado ainda"
+        st.markdown(f"**📦 Produto Identificado:** {last_title}")
+        st.markdown(f"**🏪 Loja Campeã:** {p.get('lowest_store') or 'Pendente de checagem'}")
+        if p.get("lowest_link"):
+            st.markdown(f"[🔗 **Abrir Produto na Loja Oficial**]({p['lowest_link']})")
+
+    with col_meta:
+        st.markdown(f"**📅 Última Varredura:** `{p.get('last_checked_at') or 'Pendente'}`")
+        if scan.get("status") == "no_results":
+            st.warning("⚠️ Nenhuma oferta exata encontrada na última varredura.")
+        if curr_p and target_p and target_p > 0:
+            diff = curr_p - target_p
+            if diff <= 0:
+                st.success(f"🎯 **Preço-alvo atingido!** Economia de {_format_brl(abs(diff))}")
+            else:
+                st.info(f"⏳ **Faltam {_format_brl(diff)}** para alcançar o preço-alvo.")
+
+    # Bloco 2: Estatísticas Históricas
+    stats = DatabaseManager.get_product_stats(p["keyword"])
+    if stats.get("total_records", 0) > 0:
+        st.markdown("---")
+        st.markdown(f"**📊 Estatísticas Históricas** ({stats['total_records']} registro(s))")
+        hs1, hs2, hs3, hs4 = st.columns(4)
+        with hs1:
+            st.metric("Menor Já Visto", _format_brl(stats["min_price"]))
+        with hs2:
+            st.metric("Maior Já Visto", _format_brl(stats["max_price"]))
+        with hs3:
+            st.metric("Preço Médio", _format_brl(stats["avg_price"]))
+        with hs4:
+            st.metric("Variação Recente", f"{stats['diff_percent']}%")
+
+    # Bloco 3: Veredito da IA e Cupons da Última Varredura
+    ai_verdict = scan.get("ai_verdict")
+    coupons = scan.get("coupons") or []
+    if ai_verdict or coupons:
+        st.markdown("---")
+        if ai_verdict:
+            st.markdown("**🧠 Análise IA da Última Varredura**")
+            st.info(ai_verdict)
+        if coupons:
+            coupon_badges = " | ".join(
+                f"**{c.get('code', 'ATIVAR')}** ({c.get('store', 'Loja')})" for c in coupons[:3]
+            )
+            st.caption(f"🎟️ **Cupons identificados:** {coupon_badges}")
+
+    # Bloco 4: Top Ofertas Comparadas & Status dos Buscadores
+    top_offers = scan.get("top_offers") or []
+    source_status = scan.get("source_status") or {}
+    if top_offers or source_status:
+        st.markdown("---")
+        if top_offers:
+            st.markdown(f"**🛒 Top {len(top_offers)} Ofertas da Última Varredura** (de {scan.get('total_found', len(top_offers))} aprovadas / {scan.get('rejected_count', 0)} descartadas)")
+            df_top = pd.DataFrame(top_offers)[["price", "store", "title", "source", "link"]].copy()
+            df_top["price"] = df_top["price"].apply(_format_brl)
+            df_top.columns = ["Preço", "Loja", "Título", "Origem", "Link"]
+            st.dataframe(
+                df_top,
+                column_config={"Link": st.column_config.LinkColumn("Ver Oferta")},
+                use_container_width=True,
+                hide_index=True,
+            )
+        if source_status:
+            status_str = " | ".join(f"**{k}:** `{v}`" for k, v in source_status.items())
+            st.caption(f"📡 **Buscadores:** {status_str}")
+
+    # Bloco 5: Histórico Recente & Alertas WhatsApp
+    recent_hist = DatabaseManager.get_price_history(keyword=p["keyword"], limit=50)
+    recent_alerts = DatabaseManager.get_product_alerts(p["id"], limit=5)
+    if recent_hist or recent_alerts:
+        st.markdown("---")
+        c_hist, c_alrt = st.columns(2)
+        with c_hist:
+            st.markdown("**🕒 Últimas Checagens Registradas**")
+            if recent_hist:
+                last_5 = list(reversed(recent_hist[-5:]))
+                df_h = pd.DataFrame(last_5)[["recorded_at", "price", "store"]].copy()
+                df_h["price"] = df_h["price"].apply(_format_brl)
+                df_h.columns = ["Data/Hora", "Preço", "Loja"]
+                st.dataframe(df_h, use_container_width=True, hide_index=True)
+            else:
+                st.caption("Sem histórico de preços ainda.")
+        with c_alrt:
+            st.markdown("**📲 Alertas WhatsApp Disparados**")
+            if recent_alerts:
+                df_a = pd.DataFrame(recent_alerts)[["sent_at", "status", "phone"]].copy()
+                df_a.columns = ["Data/Hora", "Status", "Telefone"]
+                st.dataframe(df_a, use_container_width=True, hide_index=True)
+            else:
+                st.caption("Nenhum alerta disparado para este item ainda.")
+
+
 with tab_monitored:
     st.header("🎯 Gerenciamento de Produtos Monitorados")
     st.write("O robô verifica esses itens periodicamente e envia mensagens automáticas no WhatsApp quando o preço-alvo ou o menor preço histórico é atingido.")
+
+    products = DatabaseManager.get_monitored_products()
+
+    # Painel resumo no topo da aba
+    total_prods = len(products)
+    active_prods = sum(1 for pr in products if pr.get("is_active"))
+    targets_hit = sum(
+        1 for pr in products
+        if (pr.get("current_lowest_price") or 0) > 0
+        and (pr.get("target_price") or 0) > 0
+        and float(pr["current_lowest_price"]) <= float(pr["target_price"])
+    )
+    checked_prods = sum(1 for pr in products if pr.get("last_checked_at"))
+    kp1, kp2, kp3, kp4 = st.columns(4)
+    with kp1:
+        st.metric("📦 Total Monitorados", total_prods)
+    with kp2:
+        st.metric("🟢 Ativos", f"{active_prods} / {total_prods}")
+    with kp3:
+        st.metric("🎯 Alvos Atingidos", targets_hit)
+    with kp4:
+        st.metric("🕒 Já Checados", checked_prods)
 
     col_add, col_check_all = st.columns([3, 1])
     with col_add:
@@ -408,7 +554,12 @@ with tab_monitored:
                 st.success(f"Ciclo concluído! {len(cycle_results)} produto(s) verificado(s).")
                 st.rerun()
 
-    products = DatabaseManager.get_monitored_products()
+    send_whatsapp_manual = st.checkbox(
+        "📱 Enviar relatório no WhatsApp ao clicar em '⚡ Checar'",
+        value=True,
+        key="chk_whatsapp_manual_monitored",
+    )
+
     if not products:
         st.info("Nenhum produto cadastrado para monitoramento ainda. Adicione um acima ou pesquise na aba 'Busca Imediata'.")
     else:
@@ -445,23 +596,34 @@ with tab_monitored:
                                 st.session_state[f"editing_monitored_{p['id']}"] = False
                                 st.rerun()
                 else:
+                    curr_p = p.get("current_lowest_price")
+                    target_p = p.get("target_price")
+                    scan_info = _parse_scan_snapshot(p.get("last_scan_json"))
+
                     c_title, c_curr, c_target, c_actions = st.columns([3, 2, 2, 3])
                     with c_title:
                         status_badge = "🟢 Ativo" if p["is_active"] else "⚪ Pausado"
-                        st.markdown(f"### {p['keyword']}")
-                        st.caption(f"Status: {status_badge} | Última checagem: {p['last_checked_at'] or 'Pendente'}")
-                    with c_curr:
-                        curr_p = p.get("current_lowest_price")
-                        if curr_p is not None and curr_p > 0:
-                            curr_str = f"R$ {curr_p:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                        if curr_p and target_p and target_p > 0 and curr_p <= target_p:
+                            situation_badge = "🎯 Alvo atingido"
+                        elif curr_p and curr_p > 0:
+                            situation_badge = "⏳ Acima do alvo"
+                        elif scan_info.get("status") == "no_results":
+                            situation_badge = "⚠️ Sem ofertas na última busca"
                         else:
-                            curr_str = "Aguardando checagem"
+                            situation_badge = "🕒 Aguardando checagem"
+
+                        st.markdown(f"### {p['keyword']}")
+                        st.caption(f"{status_badge} | {situation_badge} | Última checagem: `{p['last_checked_at'] or 'Pendente'}`")
+                    with c_curr:
+                        if curr_p is not None and curr_p > 0:
+                            curr_str = _format_brl(curr_p)
+                        else:
+                            curr_str = "Pendente"
                         store_info = p.get("lowest_store") or "Aguardando checagem"
                         st.metric("Menor Preço Atual", curr_str, help=f"Loja: {store_info}")
                     with c_target:
-                        target_p = p.get("target_price")
                         if target_p is not None and target_p > 0:
-                            target_str = f"R$ {target_p:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                            target_str = _format_brl(target_p)
                         else:
                             target_str = "Qualquer queda"
                         st.metric("Preço-Alvo", target_str)
@@ -470,10 +632,19 @@ with tab_monitored:
                         st.write("")
                         col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
                         with col_btn1:
-                            if st.button("⚡ Checar", key=f"check_{p['id']}", help="Verificar preço e notificar WhatsApp agora"):
+                            if st.button("⚡ Checar", key=f"check_{p['id']}", help="Verificar preço agora"):
                                 with st.spinner(f"Consultando '{p['keyword']}'..."):
-                                    check_single_product(p, force_notify=True)
-                                    st.success("Verificado e notificado!")
+                                    res_chk = check_single_product(
+                                        p,
+                                        force_notify=send_whatsapp_manual,
+                                        notify_whatsapp=send_whatsapp_manual,
+                                    )
+                                    if res_chk.get("status") == "no_results":
+                                        st.warning("Nenhuma oferta exata encontrada desta vez.")
+                                    elif res_chk.get("alert_sent"):
+                                        st.success("Verificado e notificado no WhatsApp!")
+                                    else:
+                                        st.success("Verificado com sucesso!")
                                     st.rerun()
                         with col_btn2:
                             if st.button("✏️ Editar", key=f"edit_{p['id']}", help="Editar termo de busca e preço-alvo"):
@@ -491,21 +662,7 @@ with tab_monitored:
 
                     # Detalhes da Busca e da Oferta no Layout Web
                     with st.expander("🔍 Detalhes da Busca & Última Oferta"):
-                        d_col1, d_col2 = st.columns([3, 2])
-                        with d_col1:
-                            last_title = p.get("last_title") or (p.get("lowest_store") and f"Oferta em {p.get('lowest_store')}") or "Nenhum título registrado ainda"
-                            st.markdown(f"**📦 Produto Identificado:** {last_title}")
-                            st.markdown(f"**🏪 Loja Campeã:** {p.get('lowest_store') or 'Pendente de checagem'}")
-                            if p.get("lowest_link"):
-                                st.markdown(f"[🔗 **Abrir Produto na Loja Oficial**]({p['lowest_link']})")
-                        with d_col2:
-                            st.markdown(f"**📅 Última Varredura:** `{p.get('last_checked_at') or 'Pendente'}`")
-                            if curr_p and target_p and target_p > 0:
-                                diff = curr_p - target_p
-                                if diff <= 0:
-                                    st.success(f"🎯 **Preço-alvo atingido!** Economia de R$ {abs(diff):,.2f}")
-                                else:
-                                    st.info(f"⏳ **Faltam R$ {diff:,.2f}** para alcançar o preço-alvo.")
+                        _render_monitored_product_details(p, curr_p, target_p)
 
 # ==========================================
 # ABA 3: HISTÓRICO & GRÁFICOS

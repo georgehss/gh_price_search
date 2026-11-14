@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import threading
 from typing import List, Dict, Optional, Any
@@ -90,19 +91,52 @@ class DatabaseManager:
             _async_sync_products()
 
     @staticmethod
-    def update_product_lowest(product_id: int, lowest_price: float, store: str, link: str, title: str = ""):
+    def update_product_lowest(
+        product_id: int,
+        lowest_price: float,
+        store: str,
+        link: str,
+        title: str = "",
+        scan_snapshot: Optional[Dict[str, Any]] = None,
+    ):
+        """Atualiza o menor preço atual, metadados da oferta e snapshot JSON da última varredura."""
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        scan_json = json.dumps(scan_snapshot, ensure_ascii=False) if scan_snapshot is not None else None
         with get_db() as conn:
             try:
-                conn.execute(
-                    "UPDATE monitored_products SET current_lowest_price = ?, lowest_store = ?, lowest_link = ?, last_title = ?, last_checked_at = ? WHERE id = ?",
-                    (lowest_price, store, link, title, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), product_id)
-                )
+                if scan_json is not None:
+                    conn.execute(
+                        "UPDATE monitored_products SET current_lowest_price = ?, lowest_store = ?, lowest_link = ?, last_title = ?, last_scan_json = ?, last_checked_at = ? WHERE id = ?",
+                        (lowest_price, store, link, title, scan_json, now_str, product_id)
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE monitored_products SET current_lowest_price = ?, lowest_store = ?, lowest_link = ?, last_title = ?, last_checked_at = ? WHERE id = ?",
+                        (lowest_price, store, link, title, now_str, product_id)
+                    )
             except sqlite3.OperationalError:
                 conn.execute(
                     "UPDATE monitored_products SET current_lowest_price = ?, lowest_store = ?, lowest_link = ?, last_checked_at = ? WHERE id = ?",
-                    (lowest_price, store, link, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), product_id)
+                    (lowest_price, store, link, now_str, product_id)
                 )
             _async_sync_products()
+
+    @staticmethod
+    def update_product_scan_status(product_id: int, scan_snapshot: Dict[str, Any]):
+        """Registra horário e snapshot da varredura mesmo quando nenhuma oferta válida é encontrada."""
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        scan_json = json.dumps(scan_snapshot, ensure_ascii=False)
+        with get_db() as conn:
+            try:
+                conn.execute(
+                    "UPDATE monitored_products SET last_scan_json = ?, last_checked_at = ? WHERE id = ?",
+                    (scan_json, now_str, product_id)
+                )
+            except sqlite3.OperationalError:
+                conn.execute(
+                    "UPDATE monitored_products SET last_checked_at = ? WHERE id = ?",
+                    (now_str, product_id)
+                )
 
     @staticmethod
     def edit_monitored_product(product_id: int, new_keyword: str, new_target_price: float, update_history: bool = True) -> bool:
@@ -116,10 +150,16 @@ class DatabaseManager:
 
             # Se o termo mudou
             if old_kw.lower() != clean_new.lower():
-                conn.execute(
-                    "UPDATE monitored_products SET keyword = ?, target_price = ?, current_lowest_price = NULL, lowest_store = NULL, lowest_link = NULL, last_checked_at = NULL WHERE id = ?",
-                    (clean_new, float(new_target_price), product_id)
-                )
+                try:
+                    conn.execute(
+                        "UPDATE monitored_products SET keyword = ?, target_price = ?, current_lowest_price = NULL, lowest_store = NULL, lowest_link = NULL, last_title = '', last_scan_json = '', last_checked_at = NULL WHERE id = ?",
+                        (clean_new, float(new_target_price), product_id)
+                    )
+                except sqlite3.OperationalError:
+                    conn.execute(
+                        "UPDATE monitored_products SET keyword = ?, target_price = ?, current_lowest_price = NULL, lowest_store = NULL, lowest_link = NULL, last_checked_at = NULL WHERE id = ?",
+                        (clean_new, float(new_target_price), product_id)
+                    )
                 if update_history:
                     conn.execute(
                         "UPDATE price_history SET keyword = ? WHERE product_id = ? OR keyword = ?",
@@ -262,6 +302,16 @@ class DatabaseManager:
             rows = conn.execute(
                 "SELECT * FROM alert_logs ORDER BY sent_at DESC LIMIT ?",
                 (limit,)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    def get_product_alerts(product_id: int, limit: int = 5) -> List[Dict[str, Any]]:
+        """Retorna os alertas recentes disparados para um produto monitorado específico."""
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM alert_logs WHERE product_id = ? ORDER BY sent_at DESC LIMIT ?",
+                (product_id, limit)
             ).fetchall()
             return [dict(row) for row in rows]
 
