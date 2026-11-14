@@ -159,6 +159,33 @@ class GoogleShoppingScraper:
 
         return []
 
+    @staticmethod
+    def _build_fallback_link(title: str, store: str) -> str:
+        """Gera link direto de busca na loja ou no Google Shopping quando a API não retorna URL do anúncio."""
+        clean_title = (title or "").strip()
+        clean_store = (store or "").strip()
+        store_lower = clean_store.lower()
+        q_title = urllib.parse.quote_plus(clean_title)
+        slug = re.sub(r"[^a-zA-Z0-9]+", "-", clean_title.lower()).strip("-")
+
+        store_url_builders = [
+            ("mercado livre", lambda: f"https://lista.mercadolivre.com.br/{urllib.parse.quote(slug)}"),
+            ("shopee", lambda: f"https://shopee.com.br/search?keyword={q_title}"),
+            ("amazon", lambda: f"https://www.amazon.com.br/s?k={q_title}"),
+            ("kabum", lambda: f"https://www.kabum.com.br/busca/{urllib.parse.quote(slug)}"),
+            ("magazine luiza", lambda: f"https://www.magazineluiza.com.br/busca/{urllib.parse.quote(slug)}/"),
+            ("magalu", lambda: f"https://www.magazineluiza.com.br/busca/{urllib.parse.quote(slug)}/"),
+            ("carrefour", lambda: f"https://www.carrefour.com.br/busca/{q_title}"),
+            ("casas bahia", lambda: f"https://www.casasbahia.com.br/{urllib.parse.quote(slug)}/b"),
+            ("americanas", lambda: f"https://www.americanas.com.br/busca/{urllib.parse.quote(slug)}"),
+        ]
+        for key, builder in store_url_builders:
+            if key in store_lower:
+                return builder()
+
+        q_google = urllib.parse.quote_plus(f"{clean_title} {clean_store}".strip())
+        return f"https://www.google.com/search?tbm=shop&q={q_google}&gl=br&hl=pt-br"
+
     @classmethod
     def _search_via_serper(cls, query: str, limit: int) -> List[ProductOffer]:
         offers: List[ProductOffer] = []
@@ -181,17 +208,7 @@ class GoogleShoppingScraper:
                 store = (item.get("source") or "Google Shopping").strip()
                 link = (item.get("link") or "").strip()
                 if not link and title:
-                    product_id = str(item.get("productId") or "").strip()
-                    if product_id:
-                        q_enc = urllib.parse.quote_plus(query)
-                        pid_enc = urllib.parse.quote_plus(product_id)
-                        link = (
-                            f"https://www.google.com/search?ibp=oshop&q={q_enc}"
-                            f"&prds=catalogid:{pid_enc}&gl=br&hl=pt-br&udm=28"
-                        )
-                    else:
-                        q_fallback = urllib.parse.quote_plus(f"{title} {store}".strip())
-                        link = f"https://www.google.com/search?q={q_fallback}&gl=br&hl=pt-br&udm=28"
+                    link = cls._build_fallback_link(title, store)
                 img_url = item.get("imageUrl")
                 rating = item.get("rating")
                 if title and price > 0:
