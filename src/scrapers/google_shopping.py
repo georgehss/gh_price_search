@@ -179,7 +179,19 @@ class GoogleShoppingScraper:
                 title = (item.get("title") or "").strip()
                 price = parse_br_price(item.get("price"))
                 store = (item.get("source") or "Google Shopping").strip()
-                link = item.get("link") or ""
+                link = (item.get("link") or "").strip()
+                if not link and title:
+                    product_id = str(item.get("productId") or "").strip()
+                    if product_id:
+                        q_enc = urllib.parse.quote_plus(query)
+                        pid_enc = urllib.parse.quote_plus(product_id)
+                        link = (
+                            f"https://www.google.com/search?ibp=oshop&q={q_enc}"
+                            f"&prds=catalogid:{pid_enc}&gl=br&hl=pt-br&udm=28"
+                        )
+                    else:
+                        q_fallback = urllib.parse.quote_plus(f"{title} {store}".strip())
+                        link = f"https://www.google.com/search?q={q_fallback}&gl=br&hl=pt-br&udm=28"
                 img_url = item.get("imageUrl")
                 rating = item.get("rating")
                 if title and price > 0:

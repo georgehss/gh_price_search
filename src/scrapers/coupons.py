@@ -132,45 +132,77 @@ class CouponScraper:
     def search_all_relevant_coupons(cls, query: str, stores_found: Optional[List[str]] = None, limit: int = 6) -> List[CouponOffer]:
         """
         Busca inteligente:
-        1. Identifica se a busca do produto menciona alguma loja ou se as ofertas encontradas são de lojas conhecidas.
-        2. Coleta cupons ativos dessas lojas no Cuponomia.
-        3. Adiciona cupons em destaque gerais da comunidade Promobit.
+        1. Identifica em ordem de prioridade as lojas mencionadas na query ou nas ofertas encontradas.
+        2. Coleta cupons ativos dessas lojas no Cuponomia em rodízio equilibrado.
+        3. Prioriza cupons em destaque do Promobit que correspondam às lojas encontradas.
         """
+        if limit <= 0:
+            return []
+
+        ordered_slugs: List[str] = []
+        seen_slugs = set()
+
+        def _add_slug(slug: Optional[str]):
+            if slug and slug not in seen_slugs:
+                seen_slugs.add(slug)
+                ordered_slugs.append(slug)
+
+        _add_slug(cls.resolve_store_slug(query))
+        if stores_found:
+            for s in stores_found:
+                _add_slug(cls.resolve_store_slug(s))
+
+        # Se nenhuma loja foi detectada, carrega as lojas mais comuns de eletrônicos/e-commerce
+        if not ordered_slugs:
+            for default_slug in ("amazon", "kabum", "mercado-livre", "magazine-luiza"):
+                _add_slug(default_slug)
+
+        target_slugs = ordered_slugs[:3]
+
+        # Coleta cupons no Cuponomia e intercala em rodízio entre as lojas encontradas
+        per_store_lists = [
+            cls.fetch_store_coupons_cuponomia(slug, limit=3) for slug in target_slugs
+        ]
+        cuponomia_coupons: List[CouponOffer] = []
+        max_len = max((len(lst) for lst in per_store_lists), default=0)
+        for idx in range(max_len):
+            for lst in per_store_lists:
+                if idx < len(lst):
+                    cuponomia_coupons.append(lst[idx])
+
+        # Coleta cupons da comunidade Promobit separando os que correspondem às lojas encontradas
+        promobit_raw = cls.fetch_promobit_featured_coupons(limit=12)
+        promobit_matched: List[CouponOffer] = []
+        promobit_others: List[CouponOffer] = []
+        for c in promobit_raw:
+            c_slug = cls.resolve_store_slug(c.store)
+            if c_slug and c_slug in seen_slugs:
+                promobit_matched.append(c)
+            else:
+                promobit_others.append(c)
+
+        promobit_reserve = min(len(promobit_matched), 2 if limit >= 4 else 1)
+        cuponomia_budget = max(0, limit - promobit_reserve)
+
         all_coupons: List[CouponOffer] = []
         seen_codes = set()
 
-        # 1. Checar lojas a partir do query ou das ofertas
-        target_slugs = set()
-        query_slug = cls.resolve_store_slug(query)
-        if query_slug:
-            target_slugs.add(query_slug)
-
-        if stores_found:
-            for s in stores_found:
-                slug = cls.resolve_store_slug(s)
-                if slug:
-                    target_slugs.add(slug)
-
-        # Se nenhuma loja foi detectada, carrega as lojas mais comuns de eletrônicos/e-commerce
-        if not target_slugs:
-            target_slugs.update(["amazon", "kabum", "mercado-livre", "magazine-luiza"])
-
-        # 2. Buscar cupons de cada loja alvo
-        for slug in list(target_slugs)[:3]:
-            store_coupons = cls.fetch_store_coupons_cuponomia(slug, limit=3)
-            for c in store_coupons:
+        def _append_unique(items: List[CouponOffer], max_to_add: int):
+            added = 0
+            for c in items:
+                if added >= max_to_add or len(all_coupons) >= limit:
+                    break
                 key = (c.code, c.store, c.description[:30])
                 if key not in seen_codes:
                     seen_codes.add(key)
                     all_coupons.append(c)
+                    added += 1
 
-        # 3. Adicionar cupons da comunidade Promobit
-        promobit_coupons = cls.fetch_promobit_featured_coupons(limit=3)
-        for c in promobit_coupons:
-            key = (c.code, c.store, c.description[:30])
-            if key not in seen_codes:
-                seen_codes.add(key)
-                all_coupons.append(c)
+        _append_unique(promobit_matched, promobit_reserve)
+        _append_unique(cuponomia_coupons, cuponomia_budget)
+        _append_unique(promobit_matched, limit - len(all_coupons))
+        _append_unique(cuponomia_coupons, limit - len(all_coupons))
+        _append_unique(promobit_others, limit - len(all_coupons))
 
         return all_coupons[:limit]
 

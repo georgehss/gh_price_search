@@ -149,6 +149,52 @@ class ProductRelevanceFilter:
         return False
 
     @classmethod
+    def _has_required_brand(cls, q_tokens: List[str], target_norm: str) -> Tuple[bool, str]:
+        """Verifica se a marca/termo principal inferido da query está presente em target_norm."""
+        primary_brand = cls.infer_brand_token(q_tokens)
+        if len(primary_brand) >= 4 and primary_brand not in target_norm:
+            if not (primary_brand == "ps5" and "playstation" in target_norm):
+                return False, primary_brand
+        return True, primary_brand
+
+    @classmethod
+    def _find_missing_model_code(cls, query_norm: str, target_norm: str) -> Optional[str]:
+        """Retorna o primeiro código de modelo da query ausente em target_norm, ou None se todos constarem."""
+        query_codes = cls.extract_model_codes(query_norm)
+        if not query_codes:
+            return None
+        target_words = set(target_norm.split())
+        target_compact = target_norm.replace(" ", "")
+        base_codes = [c for c in query_codes if any(tok == c for tok in query_norm.split())]
+        for code in (base_codes or query_codes):
+            if not (code in target_words or code in target_norm or code in target_compact):
+                return code
+        return None
+
+    @classmethod
+    def _is_bundle_main_product(
+        cls,
+        query_norm: str,
+        q_tokens: List[str],
+        raw_title: str,
+    ) -> Optional[str]:
+        """
+        Quando o título usa '+' para indicar kit/combo (ex: 'Caixa Ecopower EP-S314 + Microfone + Tripé'),
+        retorna o trecho principal normalizado antes do '+' se ele já contiver marca e códigos do modelo.
+        """
+        if "+" not in raw_title:
+            return None
+        main_norm = cls.normalize_text(raw_title.split("+", 1)[0])
+        if not main_norm:
+            return None
+
+        has_brand, _ = cls._has_required_brand(q_tokens, main_norm)
+        if not has_brand or cls._find_missing_model_code(query_norm, main_norm) is not None:
+            return None
+
+        return main_norm
+
+    @classmethod
     def calculate_relevance(cls, query: str, title: str) -> Tuple[bool, float, str]:
         """
         Calcula pontuação de relevância (0.0 a 1.0) e decide se a oferta é aceita.
@@ -164,8 +210,12 @@ class ProductRelevanceFilter:
         if not q_tokens:
             return False, 0.0, "Nenhum termo significativo na query"
 
+        # Em kits com '+' (ex: 'Produto + Tripé'), avalia acessórios apenas no item principal antes do '+'
+        bundle_main = cls._is_bundle_main_product(query_norm, q_tokens, title)
+        accessory_target = bundle_main or title_norm
+
         # 1. Filtro Anti-Acessório / Categoria divergente
-        is_accessory, acc_term = cls.check_accessory_mismatch(query_norm, title_norm)
+        is_accessory, acc_term = cls.check_accessory_mismatch(query_norm, accessory_target)
         if is_accessory:
             return False, 0.0, f"Acessório descartado ({acc_term})"
 
@@ -183,10 +233,10 @@ class ProductRelevanceFilter:
             for tt in target_terms:
                 norm_tt = cls.normalize_text(tt)
                 if (
-                    f"para {norm_tt}" in title_norm
-                    or f"p {norm_tt}" in title_norm
-                    or f"compativel {norm_tt}" in title_norm
-                    or f"compativel com {norm_tt}" in title_norm
+                    f"para {norm_tt}" in accessory_target
+                    or f"p {norm_tt}" in accessory_target
+                    or f"compativel {norm_tt}" in accessory_target
+                    or f"compativel com {norm_tt}" in accessory_target
                 ):
                     return False, 0.0, f"Acessório/complemento fabricado 'para {tt}'"
 
@@ -196,11 +246,9 @@ class ProductRelevanceFilter:
 
         # 3. Verificação de Marca / Termo Principal Obrigatório
         # Infere a marca ignorando palavras genéricas de categoria (ex: 'caixa', 'som', 'bluetooth')
-        primary_brand = cls.infer_brand_token(q_tokens)
-        if len(primary_brand) >= 4 and primary_brand not in title_norm:
-            # Caso especial de abreviações: ps5 -> playstation 5
-            if not (primary_brand == "ps5" and "playstation" in title_norm):
-                return False, 0.0, f"Marca ou termo principal obrigatório '{primary_brand}' ausente no produto"
+        has_brand, primary_brand = cls._has_required_brand(q_tokens, title_norm)
+        if not has_brand:
+            return False, 0.0, f"Marca ou termo principal obrigatório '{primary_brand}' ausente no produto"
 
         # 4. Cálculo de Cobertura de Tokens
         matched_tokens = 0
@@ -233,21 +281,12 @@ class ProductRelevanceFilter:
             is_valid = coverage >= 0.50
 
         # 5. Verificação estrita para códigos de modelo (numéricos e alfanuméricos, ex: 's314', 'eps314', '4060')
-        query_codes = cls.extract_model_codes(query_norm)
-        if query_codes:
-            base_codes = [c for c in query_codes if any(tok == c for tok in query_norm.split())]
-            for code in (base_codes or query_codes):
-                # Aceita o código isolado ou sua forma concatenada (ex: 's314' ou 'eps314')
-                code_present = (
-                    code in title_words
-                    or code in title_norm
-                    or code in title_compact
-                )
-                if not code_present:
-                    title_codes = cls.extract_model_codes(title_norm)
-                    if title_codes:
-                        return False, round(score * 0.4, 2), f"Modelo divergente: esperado '{code}', encontrado '{title_codes[0]}'"
-                    return False, round(score * 0.5, 2), f"Código de modelo '{code}' ausente no produto"
+        missing_code = cls._find_missing_model_code(query_norm, title_norm)
+        if missing_code is not None:
+            title_codes = cls.extract_model_codes(title_norm)
+            if title_codes:
+                return False, round(score * 0.4, 2), f"Modelo divergente: esperado '{missing_code}', encontrado '{title_codes[0]}'"
+            return False, round(score * 0.5, 2), f"Código de modelo '{missing_code}' ausente no produto"
 
         reason = "Aprovado pelo filtro de relevância" if is_valid else f"Baixa correspondência ({score:.0%})"
         return is_valid, score, reason

@@ -84,7 +84,13 @@ class MercadoLivreScraper:
             url = f"https://lista.mercadolivre.com.br/{urllib.parse.quote(slug)}"
             resp = session.get(url, timeout=10)
             if resp.status_code == 200:
-                if "acesse sua conta" in resp.text.lower() or "sou novo" in resp.text.lower():
+                resp_lower = resp.text.lower()
+                if (
+                    "account-verification" in resp.url.lower()
+                    or "suspicious-traffic" in resp_lower
+                    or "acesse sua conta" in resp_lower
+                    or "sou novo" in resp_lower
+                ):
                     cls.last_status = "blocked_login"
                     return offers
 
